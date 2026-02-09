@@ -1,0 +1,27 @@
+## Interface: 38000
+## Title: BossTracker
+## Title-zhCN: BossTracker - 多目标Boss追踪器
+## Notes: Multi-target boss DOT tracker with click-to-cast
+## Notes-zhCN: DOT优先的多Boss追踪、点击施法、智能排序
+## Author: Qingze
+## Version: 0.2.0
+## SavedVariables: BossTrackerDB
+## SavedVariablesPerCharacter: BossTrackerCharDB
+
+Config.lua
+Utils.lua
+Data\ClassRegistry.lua
+Data\Classes\WarlockAffliction.lua
+Data\Raids\T2\SerpentshrineCavern.lua
+Data\Raids\T2\TempestKeep.lua
+Logic\EncounterTracker.lua
+Logic\DotTracker.lua
+UI\Container.lua
+UI\Portrait.lua
+UI\HealthBar.lua
+UI\CastBar.lua
+UI\DotIcons.lua
+UI\Highlight.lua
+UI\ConfigFrame.lua
+UI\BossFrame.lua
+Core.lua
