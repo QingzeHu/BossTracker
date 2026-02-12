@@ -21,5 +21,11 @@ BossTracker.Data.Classes["HUNTER_MARKSMANSHIP"] = {
             priority = 2,
             pandemic = 0,
         },
+        {
+            name     = "爆炸陷阱效果",
+            spellId  = 49065,
+            priority = 3,
+            pandemic = 0,
+        },
     },
 }

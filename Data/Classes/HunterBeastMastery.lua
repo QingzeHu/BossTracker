@@ -2,11 +2,11 @@ BossTracker = BossTracker or {}
 BossTracker.Data = BossTracker.Data or {}
 BossTracker.Data.Classes = BossTracker.Data.Classes or {}
 
-BossTracker.Data.Classes["HUNTER_SURVIVAL"] = {
+BossTracker.Data.Classes["HUNTER_BEASTMASTERY"] = {
     className   = "猎人",
     classNameEN = "HUNTER",
-    specName    = "生存",
-    talentTab   = 3,
+    specName    = "兽王",
+    talentTab   = 1,
 
     dots = {
         {
@@ -22,21 +22,9 @@ BossTracker.Data.Classes["HUNTER_SURVIVAL"] = {
             pandemic = 0,
         },
         {
-            name     = "黑箭",
-            spellId  = 63672,
-            priority = 3,
-            pandemic = 5,
-        },
-        {
-            name     = "爆炸射击",
-            spellId  = 60053,
-            priority = 4,
-            pandemic = 0,
-        },
-        {
             name     = "爆炸陷阱效果",
             spellId  = 49065,
-            priority = 5,
+            priority = 3,
             pandemic = 0,
         },
     },
