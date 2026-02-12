@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如 0.3.0)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package addon
+        run: |
+          mkdir -p BossTracker
+          # 复制插件文件，排除开发/文档文件
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.claude' \
+            --exclude='.gitignore' \
+            --exclude='docs' \
+            --exclude='CLAUDE.md' \
+            --exclude='pack.ps1' \
+            --exclude='pack.bat' \
+            --exclude='*.zip' \
+            ./ BossTracker/
+          zip -r BossTracker-${{ inputs.version }}.zip BossTracker/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: BossTracker v${{ inputs.version }}
+          files: BossTracker-${{ inputs.version }}.zip
+          generate_release_notes: true

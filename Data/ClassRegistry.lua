@@ -16,30 +16,52 @@ function ClassRegistry:Detect()
     local _, classEN = UnitClass("player")
     if not classEN then return nil end
 
-    -- 遍历所有注册的职业配置，找到匹配的
+    -- Cata Classic: 使用 GetPrimaryTalentTree 获取主天赋树索引（最可靠）
+    local primaryTab
+    if GetPrimaryTalentTree then
+        local ok, tab = pcall(GetPrimaryTalentTree)
+        if ok and tab then primaryTab = tab end
+    end
+
+    -- 回退: 使用 GetTalentTabInfo 比较天赋点数
+    -- Cata API 返回: id, name, description, icon, pointsSpent, ...
+    -- WotLK API 返回: name, icon, pointsSpent, ...
+    local function GetTabPoints(tabIndex)
+        if not GetTalentTabInfo then return 0 end
+        local results = {pcall(GetTalentTabInfo, tabIndex)}
+        if not results[1] then return 0 end
+        -- 尝试Cata格式（第6个值）和WotLK格式（第4个值）
+        return tonumber(results[6]) or tonumber(results[4]) or 0
+    end
+
     local bestMatch = nil
     local bestPoints = 0
+    local fallbackMatch = nil
 
     for key, config in pairs(BT.Data.Classes) do
         if config.classNameEN == classEN then
-            -- 检查天赋点数（防御性处理，兼容不同客户端版本）
-            local tab = config.talentTab
-            if tab and GetNumTalentTabs and GetTalentTabInfo then
-                local ok, numTabs = pcall(GetNumTalentTabs)
-                if ok and numTabs and tab <= numTabs then
-                    local ok2, _, _, pointsSpent = pcall(GetTalentTabInfo, tab)
-                    pointsSpent = tonumber(pointsSpent) or 0
-                    if ok2 and pointsSpent > bestPoints then
-                        bestPoints = pointsSpent
-                        bestMatch = config
-                    end
+            -- 优先: GetPrimaryTalentTree 精确匹配
+            if primaryTab and config.talentTab == primaryTab then
+                bestMatch = config
+                break
+            end
+            -- 次选: 天赋点数比较（GetPrimaryTalentTree不可用时）
+            if not primaryTab then
+                local points = GetTabPoints(config.talentTab)
+                if points > bestPoints then
+                    bestPoints = points
+                    bestMatch = config
                 end
             end
-            -- 如果天赋API不可用或没匹配到，作为默认匹配
-            if not bestMatch then
-                bestMatch = config
+            -- 回退: 第一个匹配的职业配置
+            if not fallbackMatch then
+                fallbackMatch = config
             end
         end
+    end
+
+    if not bestMatch then
+        bestMatch = fallbackMatch
     end
 
     self.currentConfig = bestMatch
