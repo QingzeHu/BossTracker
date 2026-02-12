@@ -13,6 +13,7 @@ Utils.lua
 Data\ClassRegistry.lua
 Data\Classes\WarlockAffliction.lua
 Data\Classes\WarlockDemonology.lua
+Data\Classes\WarlockDestruction.lua
 Data\Classes\MageFire.lua
 Data\Classes\DeathKnightUnholy.lua
 Data\Classes\PriestShadow.lua

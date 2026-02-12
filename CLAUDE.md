@@ -17,7 +17,7 @@ claude
 
 BossTracker 是一个魔兽世界怀旧服（Cata Classic, Interface: 38000, 客户端目录 `_classic_titan_`）的独立插件。
 用途：多目标Boss战中追踪每个Boss的血量和玩家DOT状态，支持点击切换目标。
-额外支持训练假人模式：自动检测附近的训练假人姓名牌并显示追踪框体。
+额外支持训练假人模式：在主城等非副本环境自动检测附近的训练假人姓名牌并显示追踪框体。
 
 ### 设计理念
 
@@ -329,7 +329,8 @@ BossTracker.Data.Classes["WARLOCK_AFFLICTION"] = {
 ### 假人模式详细机制
 
 ```lua
--- 触发：检测到名字包含"假人"的姓名牌
+-- 触发：在非副本环境（主城等）检测到名字包含"假人"的姓名牌
+--        已配置副本内由encounter系统管理，不激活假人模式
 -- 数据结构：
 dummySlots = { [slotIndex] = "nameplateN" }
 dummyNameplates = { ["nameplateN"] = slotIndex }
@@ -345,7 +346,8 @@ dummyNameplates = { ["nameplateN"] = slotIndex }
 -- 注意：swap中的 SetUnitId + UpdateAll 必须在战斗中也能执行
 --        （它们内部已处理Secure属性的战斗锁定）
 
--- 退出：Boss战开始(ENCOUNTER_START/ENGAGE_UNIT)时自动退出
+-- 退出：进入已配置副本时自动退出（encounter系统接管）
+--        Boss战开始(ENCOUNTER_START/ENGAGE_UNIT)时自动退出
 --        所有假人姓名牌消失时自动退出
 --        进入测试模式时退出
 ```
@@ -389,7 +391,7 @@ UNIT_AURA                       → 只更新对应unit的DOT状态
 PLAYER_TARGET_CHANGED           → 更新所有高亮 + 测试模式刷新
 PLAYER_REGEN_DISABLED           → 进战标记
 PLAYER_REGEN_ENABLED            → 脱战 → 处理延迟的假人模式退出
-NAME_PLATE_UNIT_ADDED           → 检测训练假人 → 进入假人模式
+NAME_PLATE_UNIT_ADDED           → 非副本环境检测训练假人 → 进入假人模式
 NAME_PLATE_UNIT_REMOVED         → 释放假人槽位 → 可能退出假人模式
 ```
 

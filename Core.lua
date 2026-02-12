@@ -268,8 +268,8 @@ end
 -- 扫描已有的姓名牌（插件加载时可能已有姓名牌）
 local function ScanExistingNameplates()
     if testMode then return end
-    -- 只在已配置的副本内激活假人模式
-    if not BT.Logic.EncounterTracker:IsInConfiguredRaid() then return end
+    -- 已配置副本内由encounter系统管理，不激活假人模式
+    if BT.Logic.EncounterTracker:IsInConfiguredRaid() then return end
     for i = 1, 40 do
         local unit = "nameplate" .. i
         if UnitExists(unit) and IsDummy(unit) then
@@ -640,8 +640,8 @@ local function OnEvent(self, event, ...)
                 BT.Logic.EncounterTracker:ShowFrames()
             end
         elseif not testMode then
-            if IsDummy(unit) and BT.Logic.EncounterTracker:IsInConfiguredRaid() then
-                -- 姓名牌出现 → 在已配置副本内检测训练假人，退出预显示
+            if IsDummy(unit) and not BT.Logic.EncounterTracker:IsInConfiguredRaid() then
+                -- 姓名牌出现 → 非副本环境（主城等）检测训练假人，退出预显示
                 ExitPreshowMode()
                 dummyMode = true
                 AssignDummySlot(unit)
