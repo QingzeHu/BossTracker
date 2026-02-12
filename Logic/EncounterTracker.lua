@@ -9,6 +9,7 @@ BT.Logic.EncounterTracker = EncounterTracker
 local UnitExists = UnitExists
 local UnitGUID = UnitGUID
 local UnitName = UnitName
+local UnitIsDead = UnitIsDead
 local GetInstanceInfo = GetInstanceInfo
 local GetSubZoneText = GetSubZoneText
 local InCombatLockdown = InCombatLockdown
@@ -24,6 +25,8 @@ EncounterTracker.expectedEncounterId = nil   -- SSC模式：下一个预期的en
 EncounterTracker.trackedNPCs = {}            -- { [npcId] = targetIndex }
 EncounterTracker.frameTargets = {}           -- { [frameIndex] = { name, npcId, unitId } }
 EncounterTracker.frameCount = 0             -- 当前encounter的目标数量
+EncounterTracker.preshowActive = false       -- 是否处于预显示状态（进入子区域但未开战）
+EncounterTracker.preshowEncounter = nil      -- 预显示的encounter数据（用于判断是否同一encounter）
 
 --------------------------------------------------------------
 -- GUID解析
@@ -98,6 +101,22 @@ function EncounterTracker:OnEncounterStart(encounterID)
         return false
     end
 
+    -- 如果预显示已激活且是同一个encounter，直接过渡
+    if self.preshowActive and self.preshowEncounter == encounterData then
+        self.preshowActive = false
+        self.preshowEncounter = nil
+        self.encounterActive = true
+        self.activeEncounter = encounterData
+        BT.Utils.Debug("预显示→Encounter过渡:", encounterData.name)
+        return true
+    end
+
+    -- 退出预显示（如果是不同encounter）
+    if self.preshowActive then
+        self.preshowActive = false
+        self.preshowEncounter = nil
+    end
+
     self.encounterActive = true
     self.activeEncounter = encounterData
     self.trackedNPCs = {}
@@ -116,6 +135,8 @@ function EncounterTracker:OnEncounterStart(encounterID)
             name = target.name,
             npcId = target.npcId,
             unitId = nil,  -- 还没关联到具体单位
+            guid = nil,
+            isDead = false,
         }
         self.frameCount = self.frameCount + 1
     end
@@ -129,7 +150,7 @@ end
 --------------------------------------------------------------
 -- 立即显示所有encounter目标的框体（含未关联单位的）
 function EncounterTracker:ShowFrames()
-    if not self.encounterActive then return end
+    if not self.encounterActive and not self.preshowActive then return end
 
     local cfg = BT.Config:Get("ui")
     local container = BT.UI.Container:GetFrame()
@@ -146,12 +167,27 @@ function EncounterTracker:ShowFrames()
             frame:ClearAllPoints()
             frame:SetPoint("TOPLEFT", container, "TOPLEFT", 0, yOffset)
 
-            if target.unitId and UnitExists(target.unitId) then
-                -- 已关联单位：正常显示
+            -- 先验证已关联单位是否仍有效（会检测GUID变化并标记死亡）
+            local assigned = self:IsFrameAssigned(i)
+
+            if assigned then
+                -- 已关联且有效：正常显示
                 frame:Show()
                 frame:UpdateAll()
+            elseif target.isDead then
+                -- Boss已死亡：保持显示死亡状态
+                frame.unitId = nil  -- 清除旧unitId，防止UNIT_HEALTH事件误更新
+                frame:Show()
+                frame.nameText:SetText(target.name)
+                frame.nameText:SetTextColor(0.5, 0.5, 0.5, 1)
+                frame.healthBar.bar:SetValue(0)
+                frame.healthBar.bar:SetStatusBarColor(0.3, 0.3, 0.3, 1)
+                frame.healthBar.text:SetText("死亡")
+                frame:ResetDotStates()
+                if frame.castBar then frame.castBar:StopCast() end
             else
                 -- 未关联单位：显示名字，等待单位出现
+                frame.unitId = nil  -- 清除旧unitId，防止UNIT_HEALTH事件误更新
                 frame:Show()
                 frame.nameText:SetText(target.name)
                 frame.nameText:SetTextColor(0.5, 0.5, 0.5, 1)  -- 灰色表示未关联
@@ -213,9 +249,10 @@ end
 --------------------------------------------------------------
 -- 尝试关联单位
 --------------------------------------------------------------
--- 当新单位出现时（boss事件/姓名牌事件），尝试匹配到已追踪的NPC
+-- 当新单位出现时（boss事件/姓名牌事件/玩家目标），尝试匹配到已追踪的NPC
+-- 支持不稳定单位引用（"target"/"focus"/"mouseover"），会自动尝试查找对应姓名牌
 function EncounterTracker:TryAssignUnit(unitId)
-    if not self.encounterActive then return false end
+    if not self.encounterActive and not self.preshowActive then return false end
     if not unitId or not UnitExists(unitId) then return false end
 
     local guid = UnitGUID(unitId)
@@ -228,11 +265,33 @@ function EncounterTracker:TryAssignUnit(unitId)
     local target = self.frameTargets[targetIndex]
     if not target then return false end
 
+    -- 判断是否为不稳定单位引用（玩家切换目标后会指向不同单位）
+    local isVolatile = (unitId == "target" or unitId == "focus" or unitId == "mouseover")
+
+    -- 对于不稳定单位，尝试找到对应的姓名牌（稳定引用）
+    if isVolatile then
+        for i = 1, 40 do
+            local npUnit = "nameplate" .. i
+            if UnitExists(npUnit) and UnitGUID(npUnit) == guid then
+                unitId = npUnit
+                isVolatile = false
+                break
+            end
+        end
+    end
+
     -- 已经关联过相同单位
     if target.unitId == unitId then return false end
 
+    -- 不要用不稳定引用覆盖已有的稳定引用
+    if isVolatile and target.unitId and not target.isVolatile then return false end
+
     -- 关联单位到框体
     target.unitId = unitId
+    target.guid = guid
+    target.isDead = false
+    target.deathShown = false
+    target.isVolatile = isVolatile
     local frame = BT.UI.BossFrame:GetFrame(targetIndex)
     if frame then
         -- 更新unitId（SetUnitId会处理战斗锁定）
@@ -245,18 +304,56 @@ function EncounterTracker:TryAssignUnit(unitId)
         local cfg = BT.Config:Get("ui")
         frame.nameText:SetTextColor(cfg.nameColor[1], cfg.nameColor[2], cfg.nameColor[3], cfg.nameColor[4])
         frame:UpdateAll()
-        BT.Utils.Debug("单位关联:", target.name, "→", unitId)
+        BT.Utils.Debug("单位关联:", target.name, "→", unitId, isVolatile and "(不稳定)" or "")
     end
     return true
 end
 
 -- 扫描当前已有的boss单位，尝试关联
+-- 返回 true 表示有新单位被关联
 function EncounterTracker:ScanBossUnits()
-    if not self.encounterActive then return end
+    if not self.encounterActive and not self.preshowActive then return false end
+    local changed = false
     for i = 1, 5 do
         local unit = "boss" .. i
         if UnitExists(unit) then
-            self:TryAssignUnit(unit)
+            if self:TryAssignUnit(unit) then
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
+-- 扫描当前已有的姓名牌，尝试关联（预显示启动时Boss可能已在附近）
+-- 返回 true 表示有新单位被关联
+function EncounterTracker:ScanNameplates()
+    if not self.encounterActive and not self.preshowActive then return false end
+    local changed = false
+    for i = 1, 40 do
+        local unit = "nameplate" .. i
+        if UnitExists(unit) then
+            if self:TryAssignUnit(unit) then
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
+-- 尝试将不稳定引用（target等）升级为稳定的姓名牌引用
+function EncounterTracker:UpgradeVolatileUnits()
+    for i = 1, self.frameCount do
+        local t = self.frameTargets[i]
+        if t and t.isVolatile and t.guid then
+            for j = 1, 40 do
+                local npUnit = "nameplate" .. j
+                if UnitExists(npUnit) and UnitGUID(npUnit) == t.guid then
+                    -- TryAssignUnit会用稳定的姓名牌替换不稳定引用
+                    self:TryAssignUnit(npUnit)
+                    break
+                end
+            end
         end
     end
 end
@@ -286,23 +383,24 @@ function EncounterTracker:OnEncounterEnd(encounterID, success)
 end
 
 --------------------------------------------------------------
--- SSC模式：玩家目标检测（乱序拉怪）
+-- SSC模式：玩家目标检测（乱序拉怪/点击切换encounter）
+-- 返回 true 表示encounter已切换
 --------------------------------------------------------------
 function EncounterTracker:CheckPlayerTarget()
-    if not self.currentRaid then return end
-    if self.currentRaid.detectionMode ~= "encounter" then return end
-    if self.encounterActive then return end  -- 战斗中不切换
+    if not self.currentRaid then return false end
+    if self.currentRaid.detectionMode ~= "encounter" then return false end
+    if self.encounterActive then return false end  -- 战斗中不切换
 
     local targetGUID = UnitGUID("target")
-    if not targetGUID then return end
+    if not targetGUID then return false end
 
     local npcId = self:GetNpcIdFromGUID(targetGUID)
-    if not npcId then return end
+    if not npcId then return false end
 
-    -- 遍历所有encounter查找这个NPC
+    -- 遍历所有encounter查找这个NPC（包括Boss和小怪）
     for encId, encData in pairs(self.currentRaid.encounters) do
         for _, target in ipairs(encData.targets) do
-            if target.npcId == npcId and target.isBoss then
+            if target.npcId == npcId then
                 if self.expectedEncounterId ~= encId then
                     self.expectedEncounterId = encId
                     BT.Utils.Debug("玩家目标切换encounter:", encId, encData.name)
@@ -310,11 +408,114 @@ function EncounterTracker:CheckPlayerTarget()
                     if not InCombatLockdown() then
                         self:SetupMacros(encData)
                     end
+                    return true  -- encounter已切换
                 end
-                return
+                return false  -- 同一个encounter，无变化
             end
         end
     end
+    return false
+end
+
+--------------------------------------------------------------
+-- 预显示：进入子区域时提前显示框体（开战前可点击选目标）
+--------------------------------------------------------------
+function EncounterTracker:StartPreshow()
+    if not self.currentRaid then return false end
+    if self.encounterActive then return false end  -- 已在战斗中，不需要preshow
+    if InCombatLockdown() then return false end
+
+    -- 根据检测模式查找encounter数据
+    local encounterData = nil
+    if self.currentRaid.detectionMode == "subzone" then
+        local subZone = GetSubZoneText()
+        if subZone and subZone ~= "" then
+            encounterData = self.currentRaid.encounters[subZone]
+        end
+    elseif self.currentRaid.detectionMode == "encounter" then
+        if self.expectedEncounterId then
+            encounterData = self.currentRaid.encounters[self.expectedEncounterId]
+        end
+    end
+
+    if not encounterData then
+        -- 当前位置没有对应的encounter，退出已有preshow
+        if self.preshowActive then
+            self:ExitPreshow()
+        end
+        return false
+    end
+
+    -- 如果已经在预显示同一个encounter，不重复设置
+    if self.preshowActive and self.preshowEncounter == encounterData then
+        return true
+    end
+
+    -- 退出旧的preshow（如果有）
+    if self.preshowActive then
+        self:ExitPreshow()
+    end
+
+    -- 设置预显示数据（复用OnEncounterStart的逻辑）
+    self.trackedNPCs = {}
+    self.frameTargets = {}
+    self.frameCount = 0
+
+    local targets = encounterData.targets
+    if not targets then return false end
+
+    local maxBoss = BT.Config:Get("ui", "maxBoss")
+    for i, target in ipairs(targets) do
+        if i > maxBoss then break end
+        self.trackedNPCs[target.npcId] = i
+        self.frameTargets[i] = {
+            name = target.name,
+            npcId = target.npcId,
+            unitId = nil,
+            guid = nil,
+            isDead = false,
+        }
+        self.frameCount = self.frameCount + 1
+    end
+
+    self.preshowActive = true
+    self.preshowEncounter = encounterData
+
+    -- 设置点击宏
+    self:SetupMacros(encounterData)
+
+    -- 扫描已有的boss单位和姓名牌（玩家可能已站在Boss附近）
+    self:ScanBossUnits()
+    self:ScanNameplates()
+
+    -- 显示框体（已关联的显示血量，未关联的灰色占位）
+    self:ShowFrames()
+
+    BT.Utils.Debug("预显示开始:", encounterData.name, self.frameCount, "个目标")
+    return true
+end
+
+function EncounterTracker:ExitPreshow()
+    if not self.preshowActive then return end
+    self.preshowActive = false
+    self.preshowEncounter = nil
+    self.trackedNPCs = {}
+    self.frameTargets = {}
+    self.frameCount = 0
+
+    -- 隐藏框体
+    local maxBoss = BT.Config:Get("ui", "maxBoss")
+    for i = 1, maxBoss do
+        local frame = BT.UI.BossFrame:GetFrame(i)
+        if frame then frame:Hide() end
+    end
+    BT.UI.Container:Hide()
+
+    BT.Utils.Debug("预显示退出")
+end
+
+function EncounterTracker:IsPreshowActive()
+    return self.preshowActive
 end
 
 --------------------------------------------------------------
@@ -332,10 +533,50 @@ function EncounterTracker:GetFrameCount()
     return self.frameCount
 end
 
--- 检查指定框体是否已关联单位
+-- 检查指定框体是否已关联有效单位
+-- 同时验证GUID匹配，防止Boss死亡后WoW重分配bossN单位给其他实体
+-- 对于不稳定引用（target/focus），GUID变化时清除关联而非标记死亡
 function EncounterTracker:IsFrameAssigned(frameIndex)
     local target = self.frameTargets[frameIndex]
-    return target and target.unitId and UnitExists(target.unitId)
+    if not target or not target.unitId then return false end
+    if target.isDead then return false end
+
+    -- 不稳定引用特殊处理：玩家切换目标后引用失效，但Boss未死亡
+    if target.isVolatile then
+        if not UnitExists(target.unitId) or (target.guid and UnitGUID(target.unitId) ~= target.guid) then
+            -- 玩家已切换目标，清除关联（不标记死亡）
+            target.unitId = nil
+            target.isVolatile = false
+            return false
+        end
+        if UnitIsDead(target.unitId) then
+            target.isDead = true
+            BT.Utils.Debug("Boss已死亡:", target.name)
+            return false
+        end
+        return true
+    end
+
+    if not UnitExists(target.unitId) then
+        -- 曾关联过单位（有GUID）但现在不存在 → 标记为死亡
+        if target.guid then
+            target.isDead = true
+        end
+        return false
+    end
+    -- 验证GUID匹配（Boss死亡后WoW可能将bossN重分配给小怪）
+    if target.guid and UnitGUID(target.unitId) ~= target.guid then
+        target.isDead = true
+        BT.Utils.Debug("Boss单位已重分配:", target.name, "标记为死亡")
+        return false
+    end
+    -- 检查单位是否已死亡（Boss死了但单位仍然存在、GUID未变的情况）
+    if UnitIsDead(target.unitId) then
+        target.isDead = true
+        BT.Utils.Debug("Boss已死亡:", target.name)
+        return false
+    end
+    return true
 end
 
 --------------------------------------------------------------
@@ -346,6 +587,8 @@ function EncounterTracker:Reset()
     self.encounterActive = false
     self.activeEncounter = nil
     self.expectedEncounterId = nil
+    self.preshowActive = false
+    self.preshowEncounter = nil
     self.trackedNPCs = {}
     self.frameTargets = {}
     self.frameCount = 0
@@ -398,6 +641,8 @@ function EncounterTracker:ForceEncounterStart(key)
             name = target.name,
             npcId = target.npcId,
             unitId = nil,
+            guid = nil,
+            isDead = false,
         }
         self.frameCount = self.frameCount + 1
     end

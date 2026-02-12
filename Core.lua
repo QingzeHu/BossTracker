@@ -37,6 +37,7 @@ local castingFrame = nil  -- 当前正在显示施法条的BossFrame
 
 -- Encounter模式（副本Boss追踪）
 local encounterMode = false
+local preshowMode = false  -- 预显示模式（进入子区域但未开战）
 
 -- 训练假人模式
 local dummyMode = false
@@ -80,8 +81,8 @@ end
 -- Boss框体显示/隐藏管理
 --------------------------------------------------------------
 local function UpdateBossFrameVisibility()
-    -- Encounter模式：由EncounterTracker管理框体显示
-    if encounterMode then
+    -- Encounter模式或预显示模式：由EncounterTracker管理框体显示
+    if encounterMode or preshowMode then
         local ET = BT.Logic.EncounterTracker
         ET:ScanBossUnits()
         ET:ShowFrames()
@@ -267,6 +268,8 @@ end
 -- 扫描已有的姓名牌（插件加载时可能已有姓名牌）
 local function ScanExistingNameplates()
     if testMode then return end
+    -- 只在已配置的副本内激活假人模式
+    if not BT.Logic.EncounterTracker:IsInConfiguredRaid() then return end
     for i = 1, 40 do
         local unit = "nameplate" .. i
         if UnitExists(unit) and IsDummy(unit) then
@@ -289,12 +292,23 @@ local function FindBossFrameForTarget()
     if not targetGUID then return nil end
 
     local maxBoss = testMode and 1 or BT.Config:Get("ui", "maxBoss")
+    local ET = BT.Logic.EncounterTracker
     for i = 1, maxBoss do
         local frame = BT.UI.BossFrame:GetFrame(i)
         if frame and frame:IsShown() then
-            local frameGUID = UnitGUID(frame.unitId)
-            if frameGUID == targetGUID then
-                return frame
+            -- encounter/preshow模式：用存储的Boss GUID比较
+            -- （避免volatile引用"target"导致任意目标都匹配）
+            local frameTarget = (encounterMode or preshowMode) and ET.frameTargets[i]
+            if frameTarget and frameTarget.guid then
+                if frameTarget.guid == targetGUID then
+                    return frame
+                end
+            else
+                -- 正常/测试/假人模式：用unitId获取GUID
+                local frameGUID = frame.unitId and UnitGUID(frame.unitId)
+                if frameGUID == targetGUID then
+                    return frame
+                end
             end
         end
     end
@@ -356,15 +370,46 @@ local function ClearAllRefreshGlows()
 end
 
 --------------------------------------------------------------
+-- 预显示：进入子区域时提前显示Boss框体
+--------------------------------------------------------------
+local function TryPreshow()
+    if testMode or dummyMode or encounterMode then return end
+    if InCombatLockdown() then return end
+
+    local ET = BT.Logic.EncounterTracker
+    if not ET:IsInConfiguredRaid() then
+        if preshowMode then
+            ET:ExitPreshow()
+            preshowMode = false
+        end
+        return
+    end
+
+    if ET:StartPreshow() then
+        preshowMode = true
+    elseif preshowMode then
+        -- StartPreshow返回false（当前子区域无encounter），退出preshow
+        preshowMode = false
+    end
+end
+
+local function ExitPreshowMode()
+    if not preshowMode then return end
+    preshowMode = false
+    BT.Logic.EncounterTracker:ExitPreshow()
+end
+
+--------------------------------------------------------------
 -- 测试模式
 --------------------------------------------------------------
 local function ToggleTestMode()
     testMode = not testMode
     BT.Config:Set("options", "testMode", testMode)
 
-    -- 进入测试模式时退出假人模式
-    if testMode and dummyMode then
-        ExitDummyMode()
+    -- 进入测试模式时退出假人模式和预显示模式
+    if testMode then
+        if dummyMode then ExitDummyMode() end
+        ExitPreshowMode()
     end
 
     local frame1 = BT.UI.BossFrame:GetFrame(1)
@@ -388,6 +433,10 @@ local function ToggleTestMode()
         BT.UI.Container:Hide()
         -- 重新扫描假人
         ScanExistingNameplates()
+        -- 尝试预显示（可能在副本子区域中）
+        if not dummyMode then
+            TryPreshow()
+        end
     end
 end
 
@@ -425,6 +474,10 @@ local function OnEvent(self, event, ...)
         else
             -- 进入新区域时扫描已有姓名牌
             ScanExistingNameplates()
+            -- 尝试预显示（进入副本子区域时）
+            if not dummyMode then
+                TryPreshow()
+            end
         end
 
     elseif event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" then
@@ -432,8 +485,8 @@ local function OnEvent(self, event, ...)
         if dummyMode then
             ExitDummyMode()
         end
-        -- Encounter模式：尝试关联新出现的boss单位
-        if encounterMode then
+        -- Encounter模式或预显示模式：尝试关联新出现的boss单位
+        if encounterMode or preshowMode then
             BT.Logic.EncounterTracker:ScanBossUnits()
             BT.Logic.EncounterTracker:ShowFrames()
         end
@@ -446,10 +499,12 @@ local function OnEvent(self, event, ...)
         end
         local encounterID, encounterName = ...
         BT.Utils.Debug("ENCOUNTER_START:", encounterID, encounterName)
-        -- 尝试进入encounter模式
+        -- 尝试进入encounter模式（可能从预显示过渡）
         local ET = BT.Logic.EncounterTracker
         if not testMode and ET:IsInConfiguredRaid() then
             if ET:OnEncounterStart(encounterID) then
+                -- 从预显示过渡到encounter模式
+                preshowMode = false
                 encounterMode = true
                 BT.Utils.Debug("进入Encounter模式:", encounterName)
             end
@@ -461,14 +516,35 @@ local function OnEvent(self, event, ...)
         local encounterID, encounterName, _, _, success = ...
         BT.Utils.Debug("ENCOUNTER_END:", encounterID, encounterName, success == 1 and "胜利" or "失败")
         StopActiveCastBar()
+
+        local ET = BT.Logic.EncounterTracker
+
         -- 退出encounter模式
         if encounterMode then
-            BT.Logic.EncounterTracker:OnEncounterEnd(encounterID, success)
+            ET:OnEncounterEnd(encounterID, success)
             encounterMode = false
         end
+
+        -- 安全回退：即使不在encounter模式，也尝试推进到下一个encounter
+        -- （处理preshow模式直接开战、或encounterMode未正确设置的情况）
+        if success == 1 and ET:IsInConfiguredRaid() then
+            local encounterData = ET:FindEncounter(encounterID)
+            if encounterData and encounterData.nextEncounter then
+                ET.expectedEncounterId = encounterData.nextEncounter
+                BT.Utils.Debug("推进到下一个encounter:", ET.expectedEncounterId)
+            end
+        end
+
+        -- 退出预显示模式（清理旧状态）
+        if preshowMode then
+            ExitPreshowMode()
+        end
+
         if not testMode then
             BT.UI.BossFrame:HideAll()
             BT.UI.Container:Hide()
+            -- 尝试预显示下一个Boss
+            TryPreshow()
         end
 
     elseif event == "UNIT_HEALTH" then
@@ -477,6 +553,10 @@ local function OnEvent(self, event, ...)
         for i = 1, BT.Config:Get("ui", "maxBoss") do
             local frame = BT.UI.BossFrame:GetFrame(i)
             if frame and frame:IsShown() and frame.unitId == unit then
+                -- Encounter/预显示模式：验证单位仍然有效（防止Boss死亡后显示小怪血量）
+                if (encounterMode or preshowMode) and not BT.Logic.EncounterTracker:IsFrameAssigned(i) then
+                    break
+                end
                 frame:UpdateHealth()
                 break
             end
@@ -488,6 +568,10 @@ local function OnEvent(self, event, ...)
         for i = 1, BT.Config:Get("ui", "maxBoss") do
             local frame = BT.UI.BossFrame:GetFrame(i)
             if frame and frame:IsShown() and frame.unitId == unit then
+                -- Encounter/预显示模式：验证单位仍然有效
+                if (encounterMode or preshowMode) and not BT.Logic.EncounterTracker:IsFrameAssigned(i) then
+                    break
+                end
                 frame:UpdateDots()
                 break
             end
@@ -501,9 +585,27 @@ local function OnEvent(self, event, ...)
                 frame:UpdateHighlight()
             end
         end
-        -- Encounter模式：检测玩家目标是否属于其他encounter（乱序拉怪）
-        if not encounterMode and BT.Logic.EncounterTracker:IsInConfiguredRaid() then
-            BT.Logic.EncounterTracker:CheckPlayerTarget()
+        -- 在已配置的副本中（非encounter模式）：处理预显示
+        if not encounterMode and not testMode and not dummyMode then
+            local ET = BT.Logic.EncounterTracker
+            if ET:IsInConfiguredRaid() then
+                -- 检测玩家目标是否属于其他encounter（乱序拉怪/点击切换）
+                local switched = ET:CheckPlayerTarget()
+                if switched and not InCombatLockdown() then
+                    if preshowMode then ExitPreshowMode() end
+                    TryPreshow()
+                end
+                -- 确保preshow处于激活状态（容错：事件错过等情况）
+                if not preshowMode and not InCombatLockdown() then
+                    TryPreshow()
+                end
+                -- 尝试将玩家目标关联到框体（Boss可能没有姓名牌，但玩家可以点击选中）
+                if preshowMode then
+                    if ET:TryAssignUnit("target") then
+                        ET:ShowFrames()
+                    end
+                end
+            end
         end
         -- 测试模式下，切换目标时刷新
         if testMode then
@@ -525,19 +627,37 @@ local function OnEvent(self, event, ...)
         if BT.Logic.EncounterTracker:IsInConfiguredRaid() then
             BT.Logic.EncounterTracker:SetupExpectedMacros()
         end
+        -- 脱战后尝试预显示下一个Boss（修复击杀Boss后不自动切换的问题）
+        if not testMode and not dummyMode and not encounterMode then
+            TryPreshow()
+        end
 
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         local unit = ...
-        -- Encounter模式：尝试将新姓名牌匹配到追踪目标
-        if encounterMode then
+        -- Encounter模式或预显示模式：尝试将新姓名牌匹配到追踪目标
+        if encounterMode or preshowMode then
             if BT.Logic.EncounterTracker:TryAssignUnit(unit) then
                 BT.Logic.EncounterTracker:ShowFrames()
             end
-        elseif not testMode and IsDummy(unit) then
-            -- 姓名牌出现 → 检测训练假人
-            dummyMode = true
-            AssignDummySlot(unit)
-            UpdateBossFrameVisibility()
+        elseif not testMode then
+            if IsDummy(unit) and BT.Logic.EncounterTracker:IsInConfiguredRaid() then
+                -- 姓名牌出现 → 在已配置副本内检测训练假人，退出预显示
+                ExitPreshowMode()
+                dummyMode = true
+                AssignDummySlot(unit)
+                UpdateBossFrameVisibility()
+            elseif not dummyMode and not encounterMode then
+                -- 非假人姓名牌出现：可能是Boss → 尝试激活preshow并关联
+                local ET = BT.Logic.EncounterTracker
+                if ET:IsInConfiguredRaid() and not InCombatLockdown() then
+                    TryPreshow()
+                    if preshowMode then
+                        if ET:TryAssignUnit(unit) then
+                            ET:ShowFrames()
+                        end
+                    end
+                end
+            end
         end
 
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
@@ -557,6 +677,19 @@ local function OnEvent(self, event, ...)
         BT.Logic.EncounterTracker:DetectRaid()
         if not InCombatLockdown() then
             BT.Logic.EncounterTracker:SetupExpectedMacros()
+        end
+        -- 尝试预显示
+        if not testMode and not dummyMode then
+            TryPreshow()
+        end
+
+    elseif event == "ZONE_CHANGED" or event == "ZONE_CHANGED_INDOORS" then
+        -- 子区域变化（TK内移动房间）→ 更新预显示
+        if not testMode and not dummyMode and not encounterMode then
+            if not InCombatLockdown() then
+                BT.Logic.EncounterTracker:SetupExpectedMacros()
+            end
+            TryPreshow()
         end
 
     -- ====== 施法条事件 ======
@@ -650,6 +783,33 @@ local function OnUpdate(self, elapsed)
                 TrySwapDummyUnit(slot)
             end
         end
+    elseif preshowMode then
+        -- 预显示模式：定期扫描Boss单位、姓名牌和玩家目标
+        -- （战斗前boss单位可能不存在，姓名牌也可能没有，但玩家可以点击Boss）
+        swapElapsed = swapElapsed + UPDATE_INTERVAL
+        if swapElapsed >= SWAP_INTERVAL then
+            swapElapsed = 0
+            local ET2 = BT.Logic.EncounterTracker
+            local changed = ET2:ScanBossUnits()
+            if ET2:ScanNameplates() then changed = true end
+            -- 尝试从玩家目标关联（Boss可能没有姓名牌，但玩家可以点击选中）
+            if ET2:TryAssignUnit("target") then changed = true end
+            -- 尝试将不稳定引用升级为稳定的姓名牌
+            ET2:UpgradeVolatileUnits()
+            if changed then
+                ET2:ShowFrames()
+            end
+        end
+    elseif not encounterMode and not testMode and not dummyMode then
+        -- 自修复：在已配置的副本中但preshow未激活 → 持续尝试激活
+        -- （应对事件错过、时序问题、加载延迟等情况）
+        swapElapsed = swapElapsed + UPDATE_INTERVAL
+        if swapElapsed >= SWAP_INTERVAL then
+            swapElapsed = 0
+            if not InCombatLockdown() and BT.Logic.EncounterTracker:IsInConfiguredRaid() then
+                TryPreshow()
+            end
+        end
     end
 
     -- 只更新可见框体
@@ -663,12 +823,24 @@ local function OnUpdate(self, elapsed)
                 frame:UpdateHealth()
                 frame:UpdateDots()
                 frame:UpdateHighlight()
-            elseif encounterMode then
-                -- Encounter模式：只更新已关联单位的框体
+            elseif encounterMode or preshowMode then
+                -- Encounter/预显示模式：轮询已关联单位的框体
+                -- （姓名牌单位的事件可能不触发，需要主动轮询）
                 if ET:IsFrameAssigned(i) then
                     frame:UpdateHealth()
                     frame:UpdateDots()
                     frame:UpdateHighlight()
+                else
+                    -- Boss死亡：显示0血量（只触发一次）
+                    local target = ET.frameTargets[i]
+                    if target and target.isDead and not target.deathShown then
+                        target.deathShown = true
+                        frame.unitId = nil  -- 防止UNIT_HEALTH事件误更新
+                        frame.healthBar.bar:SetValue(0)
+                        frame.healthBar.bar:SetStatusBarColor(0.3, 0.3, 0.3, 1)
+                        frame.healthBar.text:SetText("死亡")
+                        frame:ResetDotStates()
+                    end
                 end
             else
                 -- 正常/测试模式：只更新DOT倒计时数字
@@ -748,6 +920,8 @@ eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 eventFrame:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+eventFrame:RegisterEvent("ZONE_CHANGED")
+eventFrame:RegisterEvent("ZONE_CHANGED_INDOORS")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_START")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_STOP")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_FAILED")

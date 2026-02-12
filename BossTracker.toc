@@ -12,6 +12,15 @@ Config.lua
 Utils.lua
 Data\ClassRegistry.lua
 Data\Classes\WarlockAffliction.lua
+Data\Classes\WarlockDemonology.lua
+Data\Classes\MageFire.lua
+Data\Classes\DeathKnightUnholy.lua
+Data\Classes\PriestShadow.lua
+Data\Classes\DruidBalance.lua
+Data\Classes\DruidFeral.lua
+Data\Classes\ShamanElemental.lua
+Data\Classes\HunterSurvival.lua
+Data\Classes\HunterMarksmanship.lua
 Data\Raids\T2\SerpentshrineCavern.lua
 Data\Raids\T2\TempestKeep.lua
 Logic\EncounterTracker.lua

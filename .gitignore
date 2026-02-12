@@ -1,1 +1,19 @@
-.claude/settings.local.json
+# Claude Code
+.claude/
+
+# 编辑器
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+
+# 打包产物
+*.zip
