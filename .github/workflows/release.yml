@@ -1,12 +1,9 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号 (例如 0.3.0)'
-        required: true
-        type: string
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   release:
@@ -17,8 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
       - name: Package addon
         run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
           mkdir -p BossTracker
           # 复制插件文件，排除开发/文档文件
           rsync -a \
@@ -30,14 +32,14 @@ jobs:
             --exclude='CLAUDE.md' \
             --exclude='pack.ps1' \
             --exclude='pack.bat' \
+            --exclude='bump.ps1' \
             --exclude='*.zip' \
             ./ BossTracker/
-          zip -r BossTracker-${{ inputs.version }}.zip BossTracker/
+          zip -r BossTracker-${VERSION}.zip BossTracker/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ inputs.version }}
-          name: BossTracker v${{ inputs.version }}
-          files: BossTracker-${{ inputs.version }}.zip
+          name: BossTracker v${{ steps.version.outputs.VERSION }}
+          files: BossTracker-${{ steps.version.outputs.VERSION }}.zip
           generate_release_notes: true

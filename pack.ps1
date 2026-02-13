@@ -15,6 +15,7 @@ $excludes = @(
     "CLAUDE.md",
     "pack.ps1",
     "pack.bat",
+    "bump.ps1",
     "*.zip"
 )
 
